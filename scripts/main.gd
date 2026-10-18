@@ -12,6 +12,8 @@ var current_id := ""
 var typing := false
 var waiting_choice := false
 var type_tween: Tween
+var fade_tween: Tween
+var clock_tween: Tween
 
 # Dial and signal
 var dial_angle := 0.0
@@ -31,12 +33,31 @@ func _ready() -> void:
 	%StaticOverlay.visible = false
 	static_mat = %StaticOverlay.material as ShaderMaterial
 	if static_mat == null:
-		push_error("StaticOverlay has no ShaderMaterial. Check Step 2, point 4.")
+		push_error("StaticOverlay has no ShaderMaterial. Check Step 5, section 2, point 4.")
 	for i in %ChoicesBox.get_child_count():
 		var btn := %ChoicesBox.get_child(i) as Button
 		btn.pressed.connect(_on_choice_pressed.bind(i))
+	for i in %RecordShelf.get_child_count():
+		var rbtn := %RecordShelf.get_child(i) as Button
+		rbtn.clip_text = true
+		rbtn.pressed.connect(_on_record_pressed.bind(i))
 	set_dial(0.0)
-	start_conversation(Story.TEST, "start")
+	set_clock("1:00 AM", 0.0, true)
+	start_conversation(Story.all_beats(), "intro")
+
+
+# ---------------- Clock ----------------
+
+func set_clock(text: String, frac: float, instant := false) -> void:
+	%ClockLabel.text = text
+	var x := 38.0 + 556.0 * clampf(frac, 0.0, 1.0)
+	if clock_tween:
+		clock_tween.kill()
+	if instant:
+		%SunMarker.position.x = x
+	else:
+		clock_tween = create_tween()
+		clock_tween.tween_property(%SunMarker, "position:x", x, 2.0).set_trans(Tween.TRANS_SINE)
 
 
 # ---------------- Dial ----------------
@@ -110,10 +131,21 @@ func finish_tune() -> void:
 	start_typing(n)
 
 
+# ---------------- Portrait ----------------
+
+func fade_portrait() -> void:
+	if fade_tween:
+		fade_tween.kill()
+	fade_tween = create_tween()
+	fade_tween.tween_property(%CallerPortrait, "modulate:a", 0.0, 2.5)
+	fade_tween.finished.connect(func(): %CallerPortrait.visible = false)
+
+
 # ---------------- Dialogue ----------------
 
 func start_conversation(data: Dictionary, start_id: String) -> void:
-	nodes = data
+	# duplicate(): we add temporary beats ("_play", "_hint") to this copy
+	nodes = data.duplicate()
 	show_node(start_id)
 
 
@@ -128,16 +160,25 @@ func show_node(id: String) -> void:
 	garbled = false
 	typing = false
 	%ChoicesPanel.visible = false
+	%RecordShelf.visible = false
 	if type_tween:
 		type_tween.kill()
 
 	if n.has("portrait"):
 		var p: String = n["portrait"]
+		if fade_tween:
+			fade_tween.kill()
+		%CallerPortrait.modulate.a = 1.0
 		if p == "":
 			%CallerPortrait.visible = false
 		else:
 			%CallerPortrait.texture = load("res://art/caller_%s.png" % p)
 			%CallerPortrait.visible = true
+
+	if n.has("clock"):
+		set_clock(n["clock"], n.get("sun", 0.0))
+	if n.get("fade", false):
+		fade_portrait()
 
 	# A beat with "tune" starts scrambled until the player finds the frequency.
 	if n.has("tune"):
@@ -172,6 +213,8 @@ func _on_typing_done() -> void:
 	var n: Dictionary = nodes[current_id]
 	if n.has("choices"):
 		show_choices(n["choices"])
+	elif n.has("records"):
+		show_records(n["records"])
 
 
 func show_choices(choices: Array) -> void:
@@ -196,6 +239,52 @@ func _on_choice_pressed(i: int) -> void:
 	show_node(choices[i].get("next", ""))
 
 
+# ---------------- Record shelf ----------------
+
+func show_records(records: Array) -> void:
+	waiting_choice = true
+	for i in %RecordShelf.get_child_count():
+		var btn := %RecordShelf.get_child(i) as Button
+		if i < records.size():
+			btn.text = records[i]["name"]
+			btn.visible = true
+		else:
+			btn.visible = false
+	%RecordShelf.visible = true
+
+
+func _on_record_pressed(i: int) -> void:
+	var beat_id := current_id
+	var beat: Dictionary = nodes[beat_id]
+	var records: Array = beat["records"]
+	if i >= records.size():
+		return
+	var rec: Dictionary = records[i]
+	waiting_choice = false
+	%RecordShelf.visible = false
+
+	var after := ""
+	if rec.get("right", false):
+		after = rec.get("next", "")
+	else:
+		# Wrong record: the caller reacts, then we return to this same beat.
+		nodes["_hint"] = {
+			"speaker": beat.get("hint_speaker", "CALLER"),
+			"text": rec.get("hint", "..."),
+			"next": beat_id,
+		}
+		after = "_hint"
+
+	nodes["_play"] = {
+		"speaker": "",
+		"text": "[i]~ Now playing: %s ~[/i]" % rec["name"],
+		"next": after,
+	}
+	show_node("_play")
+
+
+# ---------------- Flow ----------------
+
 func advance() -> void:
 	if nodes.is_empty() or garbled:
 		return
@@ -205,7 +294,7 @@ func advance() -> void:
 		_on_typing_done()
 		return
 	var n: Dictionary = nodes[current_id]
-	if n.has("choices"):
+	if n.has("choices") or n.has("records"):
 		return
 	show_node(n.get("next", ""))
 
@@ -218,6 +307,7 @@ func end_conversation() -> void:
 	garbled = false
 	locked = false
 	%ChoicesPanel.visible = false
+	%RecordShelf.visible = false
 	print("Conversation ended")
 
 
@@ -253,9 +343,11 @@ func _input(event: InputEvent) -> void:
 
 	if event.is_action_pressed("ui_left"):
 		set_dial(dial_angle - 4.0)
+		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("ui_right"):
 		set_dial(dial_angle + 4.0)
+		get_viewport().set_input_as_handled()
 		return
 
 	# Dialogue advance
