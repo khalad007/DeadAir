@@ -289,6 +289,7 @@ const ENDINGS := {
 		"next": "ea5",
 	},
 	"ea5": {
+		"sfx": "record",
 		"speaker": "",
 		"text": "[i]The last thing you hear is the old theme, playing for no one, and for everyone.[/i]",
 		"ending": "ENDING 1 OF 2\nSIGN OFF",
@@ -313,6 +314,7 @@ const ENDINGS := {
 		"next": "eb4",
 	},
 	"eb4": {
+		"sfx": "ring",
 		"speaker": "",
 		"text": "[i]The light on line one starts to blink. The second hand on your wall clock takes its first step in three months.[/i]",
 		"next": "eb5",

@@ -1,6 +1,8 @@
 extends Control
 
 const Story = preload("res://scripts/story.gd")
+const SfxScript = preload("res://scripts/sfx.gd")
+const Credits = preload("res://scripts/credits.gd")
 const CHARS_PER_SEC := 40.0
 const GLYPHS := "#%&*+=?/|~^"
 const FREQ_MIN := 88.0
@@ -11,6 +13,7 @@ var nodes: Dictionary = {}
 var current_id := ""
 var typing := false
 var waiting_choice := false
+var ending_active := false
 var type_tween: Tween
 var fade_tween: Tween
 var clock_tween: Tween
@@ -27,6 +30,11 @@ var garble_timer := 0.0
 var static_strength := 0.0
 var static_mat: ShaderMaterial
 
+# Sound
+var sfx
+var blip_timer := 0.0
+var last_tick_step := 0
+
 # Black fader (made in code so the scene stays untouched)
 var fader: ColorRect
 
@@ -35,6 +43,7 @@ func _ready() -> void:
 	%ChoicesPanel.visible = false
 	%RecordShelf.visible = false
 	%StaticOverlay.visible = false
+	$DialoguePanel.visible = false
 	static_mat = %StaticOverlay.material as ShaderMaterial
 	if static_mat == null:
 		push_error("StaticOverlay has no ShaderMaterial. Check Step 5, section 2, point 4.")
@@ -50,14 +59,27 @@ func _ready() -> void:
 	fader = ColorRect.new()
 	fader.color = Color.BLACK
 	fader.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	fader.modulate.a = 0.0
 	add_child(fader)
 	fader.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var idx := mini(%ChoicesPanel.get_index(), mini(%RecordShelf.get_index(), $DialoguePanel.get_index()))
 	move_child(fader, idx)
 
+	sfx = SfxScript.new()
+	add_child(sfx)
+	sfx.start_loop("hum")
+	sfx.start_loop("static")
+
 	set_dial(0.0)
 	set_clock("1:00 AM", 0.0, true)
+
+	# Fade in from black, then start the show.
+	fader.modulate.a = 1.0
+	%FreqLabel.modulate.a = 0.0
+	var tw := create_tween().set_parallel(true)
+	tw.tween_property(fader, "modulate:a", 0.0, 1.5)
+	tw.tween_property(%FreqLabel, "modulate:a", 1.0, 1.5)
+	await tw.finished
+	$DialoguePanel.visible = true
 	start_conversation(Story.all_beats(), "intro")
 	# QUICK TEST: replace "intro" above with "a17" to jump to the ending choice.
 
@@ -91,6 +113,11 @@ func set_dial(angle: float) -> void:
 	dial_angle = clampf(angle, -DIAL_LIMIT, DIAL_LIMIT)
 	%Knob.rotation_degrees = dial_angle
 	%FreqLabel.text = "%.1f FM" % get_freq()
+	var step := int(floorf(dial_angle / 5.0))
+	if step != last_tick_step:
+		last_tick_step = step
+		if sfx != null:
+			sfx.play("tick")
 
 
 func dial_from_mouse(guard: bool) -> void:
@@ -138,10 +165,23 @@ func _process(delta: float) -> void:
 	if static_mat:
 		static_mat.set_shader_parameter("strength", static_strength)
 
+	if sfx != null:
+		# Static hiss follows the on-screen static.
+		sfx.volume("static", linear_to_db(maxf(static_strength * 0.35, 0.0001)))
+		# Typing blips on spoken lines only (not narration).
+		if typing and nodes.has(current_id) and nodes[current_id].get("speaker", "") != "":
+			blip_timer += delta
+			if blip_timer >= 0.07:
+				blip_timer = 0.0
+				sfx.play("blip", randf_range(0.9, 1.15))
+		else:
+			blip_timer = 0.0
+
 
 func finish_tune() -> void:
 	garbled = false
 	locked = true
+	sfx.play("lock")
 	var n: Dictionary = nodes[current_id]
 	%SpeakerLabel.text = n.get("speaker", "")
 	start_typing(n)
@@ -163,6 +203,7 @@ func fade_to_black() -> void:
 	black_tween = create_tween().set_parallel(true)
 	black_tween.tween_property(fader, "modulate:a", 1.0, 3.0)
 	black_tween.tween_property(%FreqLabel, "modulate:a", 0.0, 3.0)
+	sfx.fade_to("hum", -45.0, 4.0)
 
 
 # ---------------- Dialogue ----------------
@@ -198,13 +239,17 @@ func show_node(id: String) -> void:
 		else:
 			%CallerPortrait.texture = load("res://art/caller_%s.png" % p)
 			%CallerPortrait.visible = true
+			sfx.play("ring")
 
 	if n.has("clock"):
 		set_clock(n["clock"], n.get("sun", 0.0))
 	if n.get("fade", false):
 		fade_portrait()
+		sfx.play("hangup")
 	if n.get("black", false):
 		fade_to_black()
+	if n.has("sfx"):
+		sfx.play(n["sfx"])
 
 	# A beat with "tune" starts scrambled until the player finds the frequency.
 	if n.has("tune"):
@@ -292,8 +337,10 @@ func _on_record_pressed(i: int) -> void:
 	var after := ""
 	if rec.get("right", false):
 		after = rec.get("next", "")
+		sfx.play("record")
 	else:
 		# Wrong record: the caller reacts, then we return to this same beat.
+		sfx.play("wrong")
 		nodes["_hint"] = {
 			"speaker": beat.get("hint_speaker", "CALLER"),
 			"text": rec.get("hint", "..."),
@@ -334,18 +381,55 @@ func show_ending(text: String) -> void:
 	typing = false
 	waiting_choice = false
 	garbled = false
+	ending_active = true
 	$DialoguePanel.visible = false
 	%ChoicesPanel.visible = false
 	%RecordShelf.visible = false
+
+	var center := CenterContainer.new()
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center.modulate.a = 0.0
+	add_child(center)
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 14)
+	center.add_child(box)
+
 	var card := Label.new()
 	card.text = text
 	card.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	card.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	card.modulate.a = 0.0
-	add_child(card)
-	card.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	create_tween().tween_property(card, "modulate:a", 1.0, 2.0)
+	card.add_theme_font_size_override("font_size", 22)
+	card.add_theme_color_override("font_color", Color("f0b060"))
+	box.add_child(card)
+
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 10)
+	box.add_child(row)
+
+	var again := Button.new()
+	again.text = "Play Again"
+	again.custom_minimum_size = Vector2(110, 24)
+	again.pressed.connect(func(): get_tree().reload_current_scene())
+	row.add_child(again)
+
+	var menu := Button.new()
+	menu.text = "Main Menu"
+	menu.custom_minimum_size = Vector2(110, 24)
+	menu.pressed.connect(func(): get_tree().change_scene_to_file("res://scenes/title.tscn"))
+	row.add_child(menu)
+
+	var credit := Label.new()
+	credit.text = Credits.SHORT
+	credit.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	credit.add_theme_font_size_override("font_size", 10)
+	credit.add_theme_color_override("font_color", Color("8a93a8"))
+	box.add_child(credit)
+
+	var tw := create_tween()
+	tw.tween_property(center, "modulate:a", 1.0, 2.0)
+	tw.finished.connect(func(): again.grab_focus())
 	print("ENDING: ", text.replace("\n", " - "))
 
 
@@ -400,8 +484,8 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 
-	# Dialogue advance
-	if waiting_choice or garbled:
+	# Dialogue advance (not while choosing, tuning, fading in, or on the ending screen)
+	if waiting_choice or garbled or ending_active or nodes.is_empty():
 		return
 	var pressed := false
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
