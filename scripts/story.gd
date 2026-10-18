@@ -291,7 +291,7 @@ const CALL2 := {
 	"d19": {
 		"speaker": "",
 		"text": "[i]You sit in the silence for a long time. The third line is already blinking.[/i]",
-		"next": "",  # Step 8 connects this to Call 3
+		"next": "i0",  # Step 8 connects this to Call 3
 	},
 }
 
@@ -300,4 +300,5 @@ static func all_beats() -> Dictionary:
 	var d := {}
 	d.merge(CALL1)
 	d.merge(CALL2)
+	d.merge(preload("res://scripts/story2.gd").beats())
 	return d

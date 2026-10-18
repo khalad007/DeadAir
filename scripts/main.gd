@@ -14,6 +14,7 @@ var waiting_choice := false
 var type_tween: Tween
 var fade_tween: Tween
 var clock_tween: Tween
+var black_tween: Tween
 
 # Dial and signal
 var dial_angle := 0.0
@@ -25,6 +26,9 @@ var lock_timer := 0.0
 var garble_timer := 0.0
 var static_strength := 0.0
 var static_mat: ShaderMaterial
+
+# Black fader (made in code so the scene stays untouched)
+var fader: ColorRect
 
 
 func _ready() -> void:
@@ -41,9 +45,21 @@ func _ready() -> void:
 		var rbtn := %RecordShelf.get_child(i) as Button
 		rbtn.clip_text = true
 		rbtn.pressed.connect(_on_record_pressed.bind(i))
+
+	# The fader sits just under the dialogue UI, so text stays readable on black.
+	fader = ColorRect.new()
+	fader.color = Color.BLACK
+	fader.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	fader.modulate.a = 0.0
+	add_child(fader)
+	fader.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var idx := mini(%ChoicesPanel.get_index(), mini(%RecordShelf.get_index(), $DialoguePanel.get_index()))
+	move_child(fader, idx)
+
 	set_dial(0.0)
 	set_clock("1:00 AM", 0.0, true)
 	start_conversation(Story.all_beats(), "intro")
+	# QUICK TEST: replace "intro" above with "a17" to jump to the ending choice.
 
 
 # ---------------- Clock ----------------
@@ -131,7 +147,7 @@ func finish_tune() -> void:
 	start_typing(n)
 
 
-# ---------------- Portrait ----------------
+# ---------------- Portrait / black ----------------
 
 func fade_portrait() -> void:
 	if fade_tween:
@@ -139,6 +155,14 @@ func fade_portrait() -> void:
 	fade_tween = create_tween()
 	fade_tween.tween_property(%CallerPortrait, "modulate:a", 0.0, 2.5)
 	fade_tween.finished.connect(func(): %CallerPortrait.visible = false)
+
+
+func fade_to_black() -> void:
+	if black_tween:
+		black_tween.kill()
+	black_tween = create_tween().set_parallel(true)
+	black_tween.tween_property(fader, "modulate:a", 1.0, 3.0)
+	black_tween.tween_property(%FreqLabel, "modulate:a", 0.0, 3.0)
 
 
 # ---------------- Dialogue ----------------
@@ -179,6 +203,8 @@ func show_node(id: String) -> void:
 		set_clock(n["clock"], n.get("sun", 0.0))
 	if n.get("fade", false):
 		fade_portrait()
+	if n.get("black", false):
+		fade_to_black()
 
 	# A beat with "tune" starts scrambled until the player finds the frequency.
 	if n.has("tune"):
@@ -296,7 +322,31 @@ func advance() -> void:
 	var n: Dictionary = nodes[current_id]
 	if n.has("choices") or n.has("records"):
 		return
+	if n.has("ending"):
+		show_ending(n["ending"])
+		return
 	show_node(n.get("next", ""))
+
+
+func show_ending(text: String) -> void:
+	nodes = {}
+	current_id = ""
+	typing = false
+	waiting_choice = false
+	garbled = false
+	$DialoguePanel.visible = false
+	%ChoicesPanel.visible = false
+	%RecordShelf.visible = false
+	var card := Label.new()
+	card.text = text
+	card.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	card.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.modulate.a = 0.0
+	add_child(card)
+	card.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	create_tween().tween_property(card, "modulate:a", 1.0, 2.0)
+	print("ENDING: ", text.replace("\n", " - "))
 
 
 func end_conversation() -> void:
