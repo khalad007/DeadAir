@@ -7,6 +7,11 @@
 [ext_resource type="Texture2D" uid="uid://cdunbcio6s8xt" path="res://art/knob.png" id="3_85g3d"]
 [ext_resource type="Texture2D" uid="uid://6pc5ir4765k" path="res://art/caller_harold.png" id="4_choun"]
 [ext_resource type="StyleBox" uid="uid://b4xp380s102ev" path="res://scenes/data/panel_style.tres" id="6_o6xl0"]
+[ext_resource type="Shader" uid="uid://b132gfu8fttpa" path="res://data/static.gdshader" id="8_tipki"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_85g3d"]
+shader = ExtResource("8_tipki")
+shader_parameter/strength = 1.0
 
 [node name="Main" type="Control" unique_id=643897897]
 layout_mode = 3
@@ -151,3 +156,23 @@ custom_minimum_size = Vector2(584, 56)
 layout_mode = 2
 bbcode_enabled = true
 scroll_active = false
+
+[node name="StaticOverlay" type="ColorRect" parent="." unique_id=235019736]
+unique_name_in_owner = true
+material = SubResource("ShaderMaterial_85g3d")
+layout_mode = 0
+offset_left = 24.0
+offset_top = 56.0
+offset_right = 120.0
+offset_bottom = 152.0
+mouse_filter = 2
+
+[node name="FreqLabel" type="Label" parent="." unique_id=1311901309]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 556.0
+offset_top = 126.0
+offset_right = 628.0
+offset_bottom = 143.0
+text = "98.0 FM"
+horizontal_alignment = 1

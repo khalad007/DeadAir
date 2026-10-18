@@ -2,6 +2,10 @@ extends Control
 
 const Story = preload("res://scripts/story.gd")
 const CHARS_PER_SEC := 40.0
+const GLYPHS := "#%&*+=?/|~^"
+const FREQ_MIN := 88.0
+const FREQ_MAX := 108.0
+const DIAL_LIMIT := 135.0
 
 var nodes: Dictionary = {}
 var current_id := ""
@@ -9,16 +13,104 @@ var typing := false
 var waiting_choice := false
 var type_tween: Tween
 
+# Dial and signal
+var dial_angle := 0.0
+var dragging := false
+var target_freq := 98.0
+var garbled := false
+var locked := false
+var lock_timer := 0.0
+var garble_timer := 0.0
+var static_strength := 0.0
+var static_mat: ShaderMaterial
+
 
 func _ready() -> void:
 	%ChoicesPanel.visible = false
 	%RecordShelf.visible = false
-	# Hook up the three choice buttons. bind(i) tells us which one was pressed.
+	%StaticOverlay.visible = false
+	static_mat = %StaticOverlay.material as ShaderMaterial
+	if static_mat == null:
+		push_error("StaticOverlay has no ShaderMaterial. Check Step 2, point 4.")
 	for i in %ChoicesBox.get_child_count():
 		var btn := %ChoicesBox.get_child(i) as Button
 		btn.pressed.connect(_on_choice_pressed.bind(i))
+	set_dial(0.0)
 	start_conversation(Story.TEST, "start")
 
+
+# ---------------- Dial ----------------
+
+func get_freq() -> float:
+	return lerpf(FREQ_MIN, FREQ_MAX, (dial_angle + DIAL_LIMIT) / (DIAL_LIMIT * 2.0))
+
+
+func get_clarity() -> float:
+	var dist := absf(get_freq() - target_freq)
+	return clampf(1.0 - (dist - 0.8) / 5.0, 0.0, 1.0)
+
+
+func set_dial(angle: float) -> void:
+	dial_angle = clampf(angle, -DIAL_LIMIT, DIAL_LIMIT)
+	%Knob.rotation_degrees = dial_angle
+	%FreqLabel.text = "%.1f FM" % get_freq()
+
+
+func dial_from_mouse(guard: bool) -> void:
+	var center: Vector2 = %Knob.global_position + %Knob.size * 0.5
+	var d: Vector2 = get_global_mouse_position() - center
+	if d.length() < 4.0:
+		return
+	var a := rad_to_deg(atan2(d.x, -d.y))  # 0 = straight up, clockwise positive
+	if guard and absf(a - dial_angle) > 150.0:
+		return  # ignore jumps across the dead zone at the bottom
+	set_dial(a)
+
+
+# ---------------- Garble / static ----------------
+
+func garble(src: String, clarity: float) -> String:
+	var out := ""
+	for ch in src:
+		if ch == " " or ch in ".,!?'":
+			out += ch
+		elif randf() > clarity:
+			out += GLYPHS[randi() % GLYPHS.length()]
+		else:
+			out += ch
+	return out
+
+
+func _process(delta: float) -> void:
+	var target_static := 0.0
+	if garbled:
+		var c := get_clarity()
+		target_static = 1.0 - c
+		if c >= 0.95:
+			lock_timer += delta
+			if lock_timer >= 0.4:
+				finish_tune()
+		else:
+			lock_timer = 0.0
+		garble_timer += delta
+		if garbled and garble_timer >= 0.1:
+			garble_timer = 0.0
+			%DialogueText.text = garble(nodes[current_id].get("text", ""), c)
+	static_strength = move_toward(static_strength, target_static, delta * 3.0)
+	%StaticOverlay.visible = %CallerPortrait.visible and static_strength > 0.01
+	if static_mat:
+		static_mat.set_shader_parameter("strength", static_strength)
+
+
+func finish_tune() -> void:
+	garbled = false
+	locked = true
+	var n: Dictionary = nodes[current_id]
+	%SpeakerLabel.text = n.get("speaker", "")
+	start_typing(n)
+
+
+# ---------------- Dialogue ----------------
 
 func start_conversation(data: Dictionary, start_id: String) -> void:
 	nodes = data
@@ -33,9 +125,12 @@ func show_node(id: String) -> void:
 	current_id = id
 	var n: Dictionary = nodes[id]
 	waiting_choice = false
+	garbled = false
+	typing = false
 	%ChoicesPanel.visible = false
+	if type_tween:
+		type_tween.kill()
 
-	# Portrait: only changes when the beat has a "portrait" key.
 	if n.has("portrait"):
 		var p: String = n["portrait"]
 		if p == "":
@@ -44,15 +139,29 @@ func show_node(id: String) -> void:
 			%CallerPortrait.texture = load("res://art/caller_%s.png" % p)
 			%CallerPortrait.visible = true
 
+	# A beat with "tune" starts scrambled until the player finds the frequency.
+	if n.has("tune"):
+		target_freq = n["tune"]
+		garbled = true
+		locked = false
+		lock_timer = 0.0
+		garble_timer = 0.0
+		%SpeakerLabel.text = "%s   (turn the dial to tune in)" % n.get("speaker", "")
+		%DialogueText.text = garble(n.get("text", ""), get_clarity())
+		%DialogueText.visible_ratio = 1.0
+		return
+
 	%SpeakerLabel.text = n.get("speaker", "")
+	start_typing(n)
+
+
+func start_typing(n: Dictionary) -> void:
 	%DialogueText.text = n.get("text", "")
 	%DialogueText.visible_ratio = 0.0
-
-	# Typewriter effect.
 	typing = true
 	if type_tween:
 		type_tween.kill()
-	var duration: float = max(0.3, %DialogueText.text.length() / CHARS_PER_SEC)
+	var duration := maxf(0.3, float(%DialogueText.text.length()) / CHARS_PER_SEC)
 	type_tween = create_tween()
 	type_tween.tween_property(%DialogueText, "visible_ratio", 1.0, duration)
 	type_tween.finished.connect(_on_typing_done)
@@ -88,10 +197,9 @@ func _on_choice_pressed(i: int) -> void:
 
 
 func advance() -> void:
-	if nodes.is_empty():
+	if nodes.is_empty() or garbled:
 		return
 	if typing:
-		# Skip the typewriter: show the whole line now.
 		type_tween.kill()
 		%DialogueText.visible_ratio = 1.0
 		_on_typing_done()
@@ -107,12 +215,51 @@ func end_conversation() -> void:
 	current_id = ""
 	typing = false
 	waiting_choice = false
+	garbled = false
+	locked = false
 	%ChoicesPanel.visible = false
 	print("Conversation ended")
 
 
+# ---------------- Input ----------------
+
 func _input(event: InputEvent) -> void:
-	if waiting_choice:
+	# Dial: mouse drag, wheel, arrow keys
+	if event is InputEventMouseButton:
+		var over_knob: bool = %Knob.get_global_rect().has_point(get_global_mouse_position())
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed and over_knob:
+				dragging = true
+				dial_from_mouse(false)
+				get_viewport().set_input_as_handled()
+				return
+			elif not event.pressed and dragging:
+				dragging = false
+				get_viewport().set_input_as_handled()
+				return
+		elif event.pressed and over_knob:
+			if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+				set_dial(dial_angle + 6.0)
+				get_viewport().set_input_as_handled()
+				return
+			elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+				set_dial(dial_angle - 6.0)
+				get_viewport().set_input_as_handled()
+				return
+	elif event is InputEventMouseMotion and dragging:
+		dial_from_mouse(true)
+		get_viewport().set_input_as_handled()
+		return
+
+	if event.is_action_pressed("ui_left"):
+		set_dial(dial_angle - 4.0)
+		return
+	if event.is_action_pressed("ui_right"):
+		set_dial(dial_angle + 4.0)
+		return
+
+	# Dialogue advance
+	if waiting_choice or garbled:
 		return
 	var pressed := false
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:

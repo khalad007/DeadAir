@@ -22,6 +22,7 @@ const TEST := {
 	},
 	"h1": {
 		"speaker": "HAROLD",
+		"tune": 91.6,
 		"text": "Evening. Or morning. I've lost track. Can you hear me okay? The signal keeps going funny.",
 		"next": "h2",
 	},
